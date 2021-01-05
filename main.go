@@ -19,6 +19,8 @@ import (
 	"fmt"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
+
 	"kmodules.xyz/client-go/meta"
 
 	"gomodules.xyz/pointer"
@@ -131,13 +133,13 @@ func (c *Controller) processNodeEvent(key string) error {
 			// delete the pod of this node
 			err = c.deletePodFromNode(node)
 			if err != nil {
-				fmt.Println("err: ",err)
+				fmt.Println("err: ", err)
 				return err
 			}
 			// delete PVCs from this node
 			err = c.deletePVCFromNode(node)
 			if err != nil {
-				fmt.Println("err: ",err)
+				fmt.Println("err: ", err)
 				return err
 			}
 		}
@@ -146,17 +148,22 @@ func (c *Controller) processNodeEvent(key string) error {
 }
 
 func (c *Controller) deletePodFromNode(node *core.Node) error {
-	pods, err := c.kubeClient.CoreV1().Pods(core.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+	fmt.Println("Deleting pods from node: ", node.Name)
+	pods, err := c.kubeClient.CoreV1().Pods(core.NamespaceAll).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: labels.SelectorFromSet(map[string]string{
+			"app.kubernetes.io/managed-by": "kubedb.com",
+		}).String(),
+	})
 	if err != nil {
 		return err
 	}
-	deleteBackground := metav1.DeletePropagationBackground
+	deleteForground := metav1.DeletePropagationForeground
 	for _, p := range pods.Items {
 		if p.Spec.NodeName == node.Name {
 			fmt.Println("Deleting Pod: ", p.Name)
 			err = c.kubeClient.CoreV1().Pods(p.Namespace).Delete(context.TODO(), p.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: pointer.Int64P(0),
-				PropagationPolicy:  &deleteBackground,
+				PropagationPolicy:  &deleteForground,
 			})
 			if err != nil {
 				return err
@@ -167,7 +174,12 @@ func (c *Controller) deletePodFromNode(node *core.Node) error {
 }
 
 func (c *Controller) deletePVCFromNode(node *core.Node) error {
-	pvc, err := c.kubeClient.CoreV1().PersistentVolumeClaims(core.NamespaceAll).List(context.TODO(), metav1.ListOptions{})
+	fmt.Println("Deleting PVCs from node: ", node.Name)
+	pvc, err := c.kubeClient.CoreV1().PersistentVolumeClaims(core.NamespaceAll).List(context.TODO(), metav1.ListOptions{
+		LabelSelector: labels.SelectorFromSet(map[string]string{
+			"app.kubernetes.io/managed-by": "kubedb.com",
+		}).String(),
+	})
 	if err != nil {
 		return err
 	}
@@ -175,8 +187,10 @@ func (c *Controller) deletePVCFromNode(node *core.Node) error {
 	keySelectedNode := "volume.kubernetes.io/selected-node"
 	for _, p := range pvc.Items {
 		nodeName, err := meta.GetStringValue(p.Annotations, keySelectedNode)
-		fmt.Println("Node Name: ",nodeName)
-		if err != nil && nodeName == node.Name {
+		if err != nil {
+			return err
+		}
+		if nodeName == node.Name {
 			fmt.Println("Deleting PVC: ", p.Name)
 			err = c.kubeClient.CoreV1().PersistentVolumeClaims(p.Namespace).Delete(context.TODO(), p.Name, metav1.DeleteOptions{
 				GracePeriodSeconds: pointer.Int64P(0),
